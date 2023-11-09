@@ -26,19 +26,56 @@ $port = "<ELK_PORT>"
 
 $uriELK = "https://${elk}:${port}/${indexName}"
 $apiAuthHeader = "ApiKey $ApiKey"
+$timeStamp = (Get-Date -Date $(Get-Date).ToUniversalTime() -Format "yyyy-MM-ddTHH:mm:ss")
+$hostname = [System.Net.Dns]::GetHostByName($env:COMPUTERNAME).HostName
 $headers=@{
     Authorization=$apiAuthHeader
     "Content-Type"="application/x-ndjson"
 }
-$timeStamp = (Get-Date -Date $(Get-Date).ToUniversalTime() -Format "yyyy-MM-ddTHH:mm:ss")
+$newData = Find-AllPersistence
 
-$persistence = Find-AllPersistence
+#######################################
+#Function
+#######################################
 
-foreach ($i in $persistence)
+function pushData($pushObject)
 {
-    Add-Member -InputObject $i -MemberType NoteProperty -Name "TimeStamp" -Value $timeStamp
+    Add-Member -InputObject $pushObject -MemberType NoteProperty -Name "TimeStamp" -Value $timeStamp
     $body=@"
-    $($i | ConvertTo-Json)
+    $($pushObject | ConvertTo-Json)
 "@
     $response = Invoke-RestMethod -Uri "$uriELK/_doc" -Method Post -Headers $headers -Body $body
+}
+
+#####################################
+#Script
+#####################################
+
+$elkData = Invoke-RestMethod -Uri "$uriELK/_search?q=Hostname:${hostname}&size=100" -Method GET -Headers $headers 
+$elkData.hits
+
+if ($elkData.took -eq 0)
+{
+    foreach ($i in $newData)
+    {
+        pushData($i)
+    }
+}
+Else
+{
+    foreach ($persistenceObject in $newData)
+    {
+        $verification = $false
+        foreach ($elkObject in $elkData.hits.hits._source)
+        {
+            if ($persistenceObject.Value -eq $elkObject.Value -AND $persistenceObject.Path -eq $elkObject.Path )
+            {
+                $verification = $true
+            }
+        }
+        if (-Not $verification)
+        {
+            pushData($persistenceObject)
+        }
+    }
 }
